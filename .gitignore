@@ -77,4 +77,7 @@ bundle_env/
 build/
 dist/
 
+# Compiled executable
+CodeComparator.pyz
+
 
