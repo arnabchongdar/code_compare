@@ -1,41 +1,80 @@
-    # Byte-compiled / optimized / DLL files
-    __pycache__/
-    *.pyc
-    *.pyd
-    *.pyo
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-    # C extensions
-    *.so
+# C extensions
+*.so
 
-    # Distribution / packaging
-    .Python
-    build/
-    dist/
-    eggs/
-    *.egg-info/
-    .env/
-    venv/
-    env/
-    pip-wheel-metadata/
-    .tox/
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
 
-    # IDE files
-    .idea/
-    .vscode/
-    *.sublime-project
-    *.sublime-workspace
+# Virtual environments
+venv/
+ENV/
+env/
+bundle_env/
+.venv/
+pip-wheel-metadata/
+pip-log.txt
 
-    # Testing
-    .pytest_cache/
-    .coverage
-    htmlcov/
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos.
+*.manifest
+*.spec
 
-    # Environment variables
-    .env
-    .flaskenv
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
 
-    # Jupyter Notebook
-    .ipynb_checkpoints
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
 
-        # Ignore the lib_bundle folder
-    bundle/
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments
+.env
+.flaskenv
+
+# Pyre type checker
+.pyre/
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Bundle and build outputs
+bundle/
+bundle_env/
+build/
+dist/
+
+
