@@ -1,0 +1,570 @@
+import tkinter as tk
+from tkinter import filedialog, scrolledtext, messagebox, ttk
+from difflib import Differ
+import os
+import hashlib
+import re
+from datetime import datetime
+import shutil
+import mimetypes
+import pandas as pd
+import zipfile
+import xml.etree.ElementTree as ET
+
+class CodeComparator:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Code Comparison Tool")
+        self.root.geometry("1200x600")
+        
+        # Configuration variables
+        self.ignore_whitespace = tk.BooleanVar(value=False)
+        self.ignore_case = tk.BooleanVar(value=False)
+        self.ignore_blank_lines = tk.BooleanVar(value=False)
+        self.fast_compare = tk.BooleanVar(value=False)
+        
+        # Main frame
+        self.frame = tk.Frame(root)
+        self.frame.pack(pady=10, fill=tk.BOTH, expand=True)
+        
+        # Labels
+        self.text1_label = tk.Label(self.frame, text="Left File/Folder")
+        self.text1_label.grid(row=0, column=0, padx=10, pady=5)
+        self.text2_label = tk.Label(self.frame, text="Right File/Folder")
+        self.text2_label.grid(row=0, column=1, padx=10, pady=5)
+        
+        # Text widgets with scrollbars
+        self.text1 = scrolledtext.ScrolledText(self.frame, width=70, height=20, wrap=tk.WORD)
+        self.text1.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
+        self.text2 = scrolledtext.ScrolledText(self.frame, width=70, height=20, wrap=tk.WORD)
+        self.text2.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
+        
+        # Configure syntax highlighting tags
+        for widget in [self.text1, self.text2]:
+            widget.tag_configure("keyword", foreground="blue")
+            widget.tag_configure("string", foreground="green")
+            widget.tag_configure("comment", foreground="gray")
+            widget.tag_configure("added", background="lightgreen")
+            widget.tag_configure("removed", background="lightcoral")
+        
+        # Button frame
+        self.button_frame = tk.Frame(root)
+        self.button_frame.pack(fill=tk.X)
+        
+        self.load1_button = tk.Button(self.button_frame, text="Load File 1", command=self.load_file1)
+        self.load1_button.grid(row=0, column=0, padx=10, pady=10)
+        
+        self.load2_button = tk.Button(self.button_frame, text="Load File 2", command=self.load_file2)
+        self.load2_button.grid(row=0, column=1, padx=10, pady=10)
+        
+        self.compare_button = tk.Button(self.button_frame, text="Compare Files", command=self.compare_code)
+        self.compare_button.grid(row=0, column=2, padx=10, pady=10)
+        
+        self.merge_button = tk.Button(self.button_frame, text="Merge to File 1", command=self.merge_to_file1)
+        self.merge_button.grid(row=0, column=3, padx=10, pady=10)
+        
+        self.folder_compare_button = tk.Button(self.button_frame, text="Compare Folders", command=self.compare_folders)
+        self.folder_compare_button.grid(row=0, column=4, padx=10, pady=10)
+        
+        self.clear_button = tk.Button(self.button_frame, text="Clear", command=self.clear_text)
+        self.clear_button.grid(row=0, column=5, padx=10, pady=10)
+        
+        self.report_button = tk.Button(self.button_frame, text="Generate Report", command=self.generate_report)
+        self.report_button.grid(row=0, column=6, padx=10, pady=10)
+        
+        # Comparison options frame
+        self.options_frame = tk.Frame(root)
+        self.options_frame.pack(fill=tk.X, pady=5)
+        
+        tk.Checkbutton(self.options_frame, text="Ignore Whitespace", variable=self.ignore_whitespace).pack(side=tk.LEFT, padx=5)
+        tk.Checkbutton(self.options_frame, text="Ignore Case", variable=self.ignore_case).pack(side=tk.LEFT, padx=5)
+        tk.Checkbutton(self.options_frame, text="Ignore Blank Lines", variable=self.ignore_blank_lines).pack(side=tk.LEFT, padx=5)
+        tk.Checkbutton(self.options_frame, text="Fast Compare (Size/Time)", variable=self.fast_compare).pack(side=tk.LEFT, padx=5)
+        
+        # Status bar
+        self.status_var = tk.StringVar()
+        self.status_var.set("Ready")
+        self.status_bar = tk.Label(root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+        
+        # File paths and content types
+        self.file1_path = ""
+        self.file2_path = ""
+        self.file1_type = ""  # 'text', 'excel', 'docx', 'image', 'binary'
+        self.file2_type = ""  # 'text', 'excel', 'docx', 'image', 'binary'
+        
+        # Bind text change for syntax highlighting with throttling
+        self.last_highlight_time = 0
+        self.text1.bind("<KeyRelease>", self.throttled_syntax_highlighting)
+        self.text2.bind("<KeyRelease>", self.throttled_syntax_highlighting)
+    
+    def throttled_syntax_highlighting(self, event=None):
+        from time import time
+        current_time = time()
+        if current_time - self.last_highlight_time > 0.5:  # Throttle to every 0.5 seconds
+            self.apply_syntax_highlighting()
+            self.last_highlight_time = current_time
+    
+    def is_text_file(self, file_path):
+        if not file_path:
+            return False
+        mime_type, _ = mimetypes.guess_type(file_path)
+        return bool(mime_type and mime_type.startswith('text'))
+    
+    def is_excel_file(self, file_path):
+        if not file_path:
+            return False
+        return file_path.lower().endswith(('.xlsx', '.xls'))
+    
+    def is_docx_file(self, file_path):
+        if not file_path:
+            return False
+        return file_path.lower().endswith('.docx')
+    
+    def is_image_file(self, file_path):
+        if not file_path:
+            return False
+        mime_type, _ = mimetypes.guess_type(file_path)
+        return bool(mime_type and mime_type.startswith('image'))
+    
+    def extract_docx_text(self, file_path):
+        try:
+            with zipfile.ZipFile(file_path) as docx:
+                xml_content = docx.read('word/document.xml')
+            tree = ET.fromstring(xml_content)
+            namespaces = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+            text_elements = tree.iterfind('.//w:t', namespaces)
+            return '\n'.join([elem.text for elem in text_elements if elem.text is not None])
+        except Exception:
+            return None
+    
+    def display_image(self, file_path):
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(file_path)
+            # Resize if too large
+            img.thumbnail((800, 600), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            
+            img_window = tk.Toplevel(self.root)
+            img_window.title(f"Image: {os.path.basename(file_path)}")
+            img_window.geometry(f"{img.width + 20}x{img.height + 60}")  # Extra space for larger button
+            
+            label = tk.Label(img_window, image=photo)
+            label.image = photo  # Keep a reference
+            label.pack(padx=10, pady=10)
+            
+            # Add close button with larger size
+            close_btn = tk.Button(img_window, text="Close", command=img_window.destroy, font=("Arial", 12), height=2)
+            close_btn.pack(fill=tk.X, padx=10, pady=10)
+            
+            return True
+        except ImportError:
+            messagebox.showerror("Missing Library", "Pillow is required to display images. Please install it with: pip install pillow")
+            return False
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to display image: {e}")
+            return False
+    
+    def is_binary_content(self, content):
+        return content.startswith(("Binary file:", "Image file:", "Failed to display", "Error reading"))
+    
+    def load_file1(self):
+        file_path = filedialog.askopenfilename(filetypes=[("All Files", "*.*")])
+        if file_path:
+            self.file1_path = file_path
+            self.status_var.set(f"Loaded: {os.path.basename(file_path)}")
+            self.load_file_content(self.text1, file_path, 1)
+    
+    def load_file2(self):
+        file_path = filedialog.askopenfilename(filetypes=[("All Files", "*.*")])
+        if file_path:
+            self.file2_path = file_path
+            self.status_var.set(f"Loaded: {os.path.basename(file_path)}")
+            self.load_file_content(self.text2, file_path, 2)
+    
+    def load_file_content(self, text_widget, file_path, file_num):
+        text_widget.delete("1.0", tk.END)
+        if self.is_image_file(file_path):
+            if self.display_image(file_path):
+                text_widget.insert(tk.END, f"Image file: {os.path.basename(file_path)}\nImage displayed in separate window.")
+                self.__setattr__(f"file{file_num}_type", "image")
+            else:
+                text_widget.insert(tk.END, f"Image file: {os.path.basename(file_path)}\nFailed to display image. Check error message.")
+                self.__setattr__(f"file{file_num}_type", "binary")
+        elif self.is_docx_file(file_path):
+            extracted_text = self.extract_docx_text(file_path)
+            if extracted_text:
+                text_widget.insert(tk.END, extracted_text)
+                self.__setattr__(f"file{file_num}_type", "text")
+                self.status_var.set(f"Loaded DOCX: {os.path.basename(file_path)}")
+            else:
+                text_widget.insert(tk.END, f"DOCX file: {os.path.basename(file_path)}\nError reading content.")
+                self.__setattr__(f"file{file_num}_type", "binary")
+        elif self.is_excel_file(file_path):
+            try:
+                df = pd.read_excel(file_path)
+                content = df.to_string(index=False)
+                text_widget.insert(tk.END, content)
+                self.__setattr__(f"file{file_num}_type", "excel")
+                self.status_var.set(f"Loaded Excel: {os.path.basename(file_path)}")
+            except Exception as e:
+                text_widget.insert(tk.END, f"Excel file: {os.path.basename(file_path)}\nError reading: {e}")
+                self.__setattr__(f"file{file_num}_type", "binary")
+        elif self.is_text_file(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as file:
+                    content = file.read()
+                    text_widget.insert(tk.END, content)
+                    self.apply_syntax_highlighting()
+                    self.__setattr__(f"file{file_num}_type", "text")
+            except Exception as e:
+                text_widget.insert(tk.END, f"Text file: {os.path.basename(file_path)}\nError reading: {e}")
+                self.__setattr__(f"file{file_num}_type", "binary")
+        else:
+            text_widget.insert(tk.END, f"Binary file: {os.path.basename(file_path)}\nCannot display content.")
+            self.__setattr__(f"file{file_num}_type", "binary")
+    
+    def apply_syntax_highlighting(self, event=None):
+        for text_widget in [self.text1, self.text2]:
+            content = text_widget.get("1.0", tk.END).strip()
+            if not content or len(content) > 100000:  # Skip large files to avoid lag
+                continue
+            text_widget.tag_remove("keyword", "1.0", tk.END)
+            text_widget.tag_remove("string", "1.0", tk.END)
+            text_widget.tag_remove("comment", "1.0", tk.END)
+            
+            try:
+                # Python keywords
+                keywords = r'\b(and|as|assert|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|pass|raise|return|True|try|while|with|yield)\b'
+                for match in re.finditer(keywords, content):
+                    start = f"1.0 + {match.start()} chars"
+                    end = f"1.0 + {match.end()} chars"
+                    text_widget.tag_add("keyword", start, end)
+                
+                # Strings
+                strings = r'(\".*?\"|\'.*?\')'
+                for match in re.finditer(strings, content):
+                    start = f"1.0 + {match.start()} chars"
+                    end = f"1.0 + {match.end()} chars"
+                    text_widget.tag_add("string", start, end)
+                
+                # Comments
+                comments = r'#[^\n]*'
+                for match in re.finditer(comments, content):
+                    start = f"1.0 + {match.start()} chars"
+                    end = f"1.0 + {match.end()} chars"
+                    text_widget.tag_add("comment", start, end)
+            except Exception as e:
+                print(f"Syntax highlighting error: {e}")
+    
+    def compare_code(self):
+        content1 = self.text1.get("1.0", tk.END).strip()
+        content2 = self.text2.get("1.0", tk.END).strip()
+        
+        if not content1 or not content2:
+            messagebox.showerror("Error", "Both panels must have content to compare.")
+            self.status_var.set("Error: Missing content")
+            return
+        
+        is_binary1 = self.is_binary_content(content1)
+        is_binary2 = self.is_binary_content(content2)
+        
+        if is_binary1 or is_binary2:
+            if not (self.file1_path and self.file2_path):
+                messagebox.showerror("Error", "Cannot compare binary files without loading them.")
+                self.status_var.set("Error: Missing file paths for binary comparison")
+                return
+            self.compare_binaries()
+            return
+        
+        # For text content, treat as text for diff
+        lines1 = content1.splitlines()
+        lines2 = content2.splitlines()
+        
+        if self.ignore_whitespace.get():
+            lines1 = [line.strip() for line in lines1]
+            lines2 = [line.strip() for line in lines2]
+        if self.ignore_case.get():
+            lines1 = [line.lower() for line in lines1]
+            lines2 = [line.lower() for line in lines2]
+        if self.ignore_blank_lines.get():
+            lines1 = [line for line in lines1 if line.strip()]
+            lines2 = [line for line in lines2 if line.strip()]
+        
+        differ = Differ()
+        diff = list(differ.compare(lines1, lines2))
+        
+        self.text1.delete("1.0", tk.END)
+        self.text2.delete("1.0", tk.END)
+        
+        for line in diff:
+            if line.startswith("+ "):
+                self.text2.insert(tk.END, line[2:] + "\n", "added")
+            elif line.startswith("- "):
+                self.text1.insert(tk.END, line[2:] + "\n", "removed")
+            else:
+                self.text1.insert(tk.END, line[2:] + "\n")
+                self.text2.insert(tk.END, line[2:] + "\n")
+        
+        self.apply_syntax_highlighting()
+        self.status_var.set("File comparison completed")
+    
+    def compare_binaries(self):
+        hash1 = self.get_file_hash(self.file1_path)
+        hash2 = self.get_file_hash(self.file2_path)
+        result = "Files are identical" if hash1 == hash2 else "Files are different"
+        messagebox.showinfo("Binary/Image File Comparison", result)
+        self.status_var.set("Binary comparison completed")
+    
+    def get_file_hash(self, file_path):
+        hasher = hashlib.md5()
+        try:
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hasher.update(chunk)
+        except Exception as e:
+            print(f"Error hashing file {file_path}: {e}")
+        return hasher.hexdigest()
+    
+    def merge_to_file1(self):
+        content1 = self.text1.get("1.0", tk.END).strip()
+        content2 = self.text2.get("1.0", tk.END).strip()
+        if not content1 or not content2:
+            messagebox.showerror("Error", "Both panels must have content for merge.")
+            self.status_var.set("Error: Missing content for merge")
+            return
+        if self.is_binary_content(content1) or self.is_binary_content(content2):
+            messagebox.showerror("Error", "Merge is only supported for text content.")
+            self.status_var.set("Error: Binary content cannot be merged")
+            return
+        if not self.file1_path:
+            messagebox.showerror("Error", "Please load File 1 to merge into it.")
+            self.status_var.set("Error: Missing File 1 path for merge")
+            return
+        lines1 = content1.splitlines()
+        lines2 = content2.splitlines()
+        differ = Differ()
+        diff = list(differ.compare(lines1, lines2))
+        
+        merged = []
+        for line in diff:
+            if line.startswith("+ "):
+                merged.append(line[2:])
+            elif not line.startswith("- "):
+                merged.append(line[2:])
+        
+        try:
+            with open(self.file1_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(merged))
+            self.text1.delete("1.0", tk.END)
+            self.text1.insert(tk.END, "\n".join(merged))
+            self.apply_syntax_highlighting()
+            messagebox.showinfo("Success", "Merged changes to File 1")
+            self.status_var.set("Merge completed")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to merge: {e}")
+            self.status_var.set("Error during merge")
+    
+    def compare_folders(self):
+        folder1 = filedialog.askdirectory()
+        folder2 = filedialog.askdirectory()
+        if not (folder1 and folder2):
+            self.status_var.set("Error: Folder selection cancelled")
+            return
+        
+        # Create a new window for folder comparison
+        compare_window = tk.Toplevel(self.root)
+        compare_window.title("Folder Comparison")
+        compare_window.geometry("800x600")
+        
+        # Treeview for displaying results
+        tree = ttk.Treeview(compare_window, columns=("Status", "Path", "Size", "Modified"), show="headings")
+        tree.heading("Status", text="Status")
+        tree.heading("Path", text="Path")
+        tree.heading("Size", text="Size (Bytes)")
+        tree.heading("Modified", text="Last Modified")
+        tree.column("Status", width=100)
+        tree.column("Path", width=400)
+        tree.column("Size", width=100)
+        tree.column("Modified", width=150)
+        tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        
+        # Scrollbars for Treeview
+        vsb = ttk.Scrollbar(compare_window, orient="vertical", command=tree.yview)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.configure(yscrollcommand=vsb.set)
+        
+        hsb = ttk.Scrollbar(compare_window, orient="horizontal", command=tree.xview)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        tree.configure(xscrollcommand=hsb.set)
+        
+        # Function to handle double-click on tree items
+        def on_double_click(event):
+            item = tree.selection()
+            if not item:
+                return
+            item = item[0]
+            status, path = tree.item(item, "values")[:2]
+            if status == "Different":
+                full_path_left = os.path.join(folder1, path)
+                full_path_right = os.path.join(folder2, path)
+                self.load_file_for_comparison(full_path_left, full_path_right)
+        
+        tree.bind("<Double-1>", on_double_click)
+        
+        # Compare folders with progress updates
+        self.status_var.set("Comparing folders...")
+        self.root.update()
+        self.compare_folders_recursive(folder1, folder2, tree)
+        self.status_var.set("Folder comparison completed")
+        
+        # Synchronization buttons
+        sync_frame = tk.Frame(compare_window)
+        sync_frame.pack(fill=tk.X)
+        
+        update_right_button = tk.Button(sync_frame, text="Update Right from Left", command=lambda: self.synchronize_folders(folder1, folder2))
+        update_right_button.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        update_left_button = tk.Button(sync_frame, text="Update Left from Right", command=lambda: self.synchronize_folders(folder2, folder1))
+        update_left_button.pack(side=tk.LEFT, padx=5, pady=5)
+    
+    def compare_folders_recursive(self, folder1, folder2, tree, base_path=""):
+        for root, dirs, files in os.walk(folder1):
+            rel_path = os.path.relpath(root, folder1)
+            folder2_path = os.path.join(folder2, rel_path)
+            
+            # Check if folder exists in folder2
+            if not os.path.exists(folder2_path):
+                tree.insert("", "end", values=("Only in Left", os.path.join(base_path, rel_path), "", ""))
+                continue
+            
+            # Compare files
+            for file in files:
+                file_path_left = os.path.join(root, file)
+                file_path_right = os.path.join(folder2_path, file)
+                
+                if not os.path.exists(file_path_right):
+                    file_size = os.path.getsize(file_path_left)
+                    file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path_left)).strftime('%Y-%m-%d %H:%M:%S')
+                    tree.insert("", "end", values=("Only in Left", os.path.join(base_path, rel_path, file), file_size, file_mtime))
+                else:
+                    file_size_left = os.path.getsize(file_path_left)
+                    file_mtime_left = datetime.fromtimestamp(os.path.getmtime(file_path_left)).strftime('%Y-%m-%d %H:%M:%S')
+                    file_size_right = os.path.getsize(file_path_right)
+                    file_mtime_right = datetime.fromtimestamp(os.path.getmtime(file_path_right)).strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    if self.fast_compare.get():
+                        if file_size_left != file_size_right or file_mtime_left != file_mtime_right:
+                            tree.insert("", "end", values=("Different", os.path.join(base_path, rel_path, file), file_size_left, file_mtime_left))
+                        else:
+                            tree.insert("", "end", values=("Identical", os.path.join(base_path, rel_path, file), file_size_left, file_mtime_left))
+                    else:
+                        if self.get_file_hash(file_path_left) != self.get_file_hash(file_path_right):
+                            tree.insert("", "end", values=("Different", os.path.join(base_path, rel_path, file), file_size_left, file_mtime_left))
+                        else:
+                            tree.insert("", "end", values=("Identical", os.path.join(base_path, rel_path, file), file_size_left, file_mtime_left))
+        
+        # Check for files only in folder2
+        for root, dirs, files in os.walk(folder2):
+            rel_path = os.path.relpath(root, folder2)
+            folder1_path = os.path.join(folder1, rel_path)
+            
+            if not os.path.exists(folder1_path):
+                tree.insert("", "end", values=("Only in Right", os.path.join(base_path, rel_path), "", ""))
+                continue
+            
+            for file in files:
+                file_path_right = os.path.join(root, file)
+                file_path_left = os.path.join(folder1_path, file)
+                
+                if not os.path.exists(file_path_left):
+                    file_size = os.path.getsize(file_path_right)
+                    file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path_right)).strftime('%Y-%m-%d %H:%M:%S')
+                    tree.insert("", "end", values=("Only in Right", os.path.join(base_path, rel_path, file), file_size, file_mtime))
+    
+    def synchronize_folders(self, source, target):
+        if messagebox.askyesno("Confirm Synchronization", f"Are you sure you want to update {target} from {source}?"):
+            try:
+                self.status_var.set("Synchronizing folders...")
+                self.root.update()
+                for root, dirs, files in os.walk(source):
+                    rel_path = os.path.relpath(root, source)
+                    target_path = os.path.join(target, rel_path)
+                    
+                    if not os.path.exists(target_path):
+                        os.makedirs(target_path)
+                    
+                    for file in files:
+                        source_file = os.path.join(root, file)
+                        target_file = os.path.join(target_path, file)
+                        
+                        if not os.path.exists(target_file) or (not self.fast_compare.get() and self.get_file_hash(source_file) != self.get_file_hash(target_file)) or \
+                           (self.fast_compare.get() and (os.path.getsize(source_file) != os.path.getsize(target_file) or \
+                           os.path.getmtime(source_file) != os.path.getmtime(target_file))):
+                            shutil.copy2(source_file, target_file)
+                
+                messagebox.showinfo("Success", "Synchronization completed")
+                self.status_var.set("Synchronization completed")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to synchronize: {e}")
+                self.status_var.set("Error during synchronization")
+    
+    def load_file_for_comparison(self, file1, file2):
+        self.file1_path = file1
+        self.file2_path = file2
+        self.load_file1()
+        self.load_file2()
+        self.compare_code()
+    
+    def generate_report(self):
+        content1 = self.text1.get("1.0", tk.END).strip()
+        content2 = self.text2.get("1.0", tk.END).strip()
+        if not content1 or not content2:
+            messagebox.showerror("Error", "Both panels must have content to generate report.")
+            self.status_var.set("Error: Missing content for report")
+            return
+        if self.is_binary_content(content1) or self.is_binary_content(content2):
+            messagebox.showerror("Error", "Report generation is only supported for text content.")
+            self.status_var.set("Error: Binary content cannot generate report")
+            return
+        lines1 = content1.splitlines()
+        lines2 = content2.splitlines()
+        differ = Differ()
+        diff = list(differ.compare(lines1, lines2))
+        
+        report = [f"Comparison Report - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "=" * 20]
+        for line in diff:
+            if line.startswith("+ "):
+                report.append(f"Added in File 2: {line[2:]}")
+            elif line.startswith("- "):
+                report.append(f"Removed in File 1: {line[2:]}")
+            elif line.startswith("? "):
+                continue
+            else:
+                report.append(f"Same: {line[2:]}")
+        
+        report_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")])
+        if report_path:
+            try:
+                with open(report_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(report))
+                messagebox.showinfo("Success", f"Report saved to {report_path}")
+                self.status_var.set("Report generated")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save report: {e}")
+                self.status_var.set("Error generating report")
+    
+    def clear_text(self):
+        self.text1.delete("1.0", tk.END)
+        self.text2.delete("1.0", tk.END)
+        self.file1_path = ""
+        self.file2_path = ""
+        self.file1_type = ""
+        self.file2_type = ""
+        self.status_var.set("Cleared")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = CodeComparator(root)
+    root.mainloop()
