@@ -80,4 +80,17 @@ dist/
 # Compiled executable
 CodeComparator.pyz
 
+# Ignore build outputs, environments, and large binaries
+build/
+dist/
+bundle/
+bundle_env/
+lib/
+*.pyz
+*.zip
+*.exe
+*.dll
+*.pyd
+
+
 
